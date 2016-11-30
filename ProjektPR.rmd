@@ -1,0 +1,202 @@
+---
+title: "Projekt - Zaawansowana Eksploracja danych"
+author: "Przemys³aw Rosowski"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+runtime: shiny
+output: 
+  html_document:
+    fig_height: 6
+    fig_width: 8
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    theme: cosmo
+---
+#Podsumowanie
+Celem analizy danych by³o okreœlenie przyczyn zmniejszania siê d³ugoœci œledzi oceanicznych wy³awianych w Europie. Podczas procesu wstêpnego analizowania danych zauwa¿ono, ¿e poszczególne wartoœci w kolumnach, w których wartoœæ totaln (³¹czne roczne natê¿enie po³owów w regionie) jest taka sama, nie ró¿ni¹ siê. Pozwoli³o to na zast¹pienie pustych komórek prawdziwymi wartoœciami. Analizuj¹c histogram widaæ, ¿e wartoœci minimalne/maksymalne ró¿nych atrybutów maj¹ rózne wartoœci - od liczb dziesiêtnych po tysi¹ce). Po zwiêkszeniu iloœci przedzia³ów histogramu i przyjrzeniu siê tym wykresom mo¿na zaryzykowaæ stwierdzenie, ¿e wartoœci dla kolumn ró¿nych od d³ugoœci i atrybutu porz¹dkowego maj¹ raczej charakter nominalny. Oczekiwano, ¿e dane te s¹ bardziej skorelowane z kolumn¹ "length" (d³ugoœæ œledzia). Postanowiono, ¿e do budowy modelu regresora zostan¹ u¿yte nastêpuj¹ce kolumny: cfin1,cfin2,chel1,lcop1,fbar,totaln,sst i nao. Do regresji u¿yto metody "random forest". Daje ona wzglêdnie dobre wyniki. Nie dosz³o do "przeuczenia" regresora. Dla tak zbudowanego modelu regresji, najwa¿niejszym atrybutem do przewidywania d³ugoœci œledzia jest sst (temperatura wody przy powierzchni).
+
+# Wstêp do analizy
+
+## Wykorzystane biblioteki
+
+```{r installPackages,echo=FALSE, cache=TRUE, message=FALSE, warning=FALSE}
+install.packages("knitr",repos = "http://cran.us.r-project.org")
+install.packages("plyr",repos = "http://cran.us.r-project.org")
+install.packages("dplyr",repos = "http://cran.us.r-project.org")
+install.packages("reshape2",repos = "http://cran.us.r-project.org")
+install.packages("ggplot2",repos = "http://cran.us.r-project.org")
+install.packages("caret",repos = "http://cran.us.r-project.org")
+install.packages("corrplot",repos = "http://cran.us.r-project.org")
+```
+```{r libraries, message=FALSE}
+library(knitr)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(caret)
+library(corrplot)
+```
+
+
+##Powtarzalnoœæ wyników
+Gwarancj¹ identycznoœci wyników jest ustawienie ziarna. Odpowiada za to poni¿sze polecenie
+```{r seed}
+set.seed(26)
+```
+
+#Wczytanie danych i ich postaæ
+Przedmiotem analizy jest zbiór pomiarów d³ugoœci œledzia na przestrzeni ostatnich 60 lat. Do badañ pobierane by³y trzyletnie œledzie. Dane zawarte s¹ w pliku *sledzie.csv* i s¹ uporz¹dkowane chronologicznie. 
+
+Nazwa zmiennej |         Opis        |        Jednostka               |
+--------------|----------------------------|----------------------------|
+length| d³ugoœæ œledzia | [cm]
+cfin1| dostêpnoœæ planktonu | [zagêszczenie Calanus finmarchicus gat. 1];
+cfin2| dostêpnoœæ planktonu | [zagêszczenie Calanus finmarchicus gat. 2];
+chel1| dostêpnoœæ planktonu | [zagêszczenie Calanus helgolandicus gat. 1];
+chel2| dostêpnoœæ planktonu | [zagêszczenie Calanus helgolandicus gat. 2];
+lcop1| dostêpnoœæ planktonu | [zagêszczenie Copepoda gat. 1];
+lcop2| dostêpnoœæ planktonu | [zagêszczenie Copepoda gat. 2];
+fbar| natê¿enie po³owów w regionie | [u³amek pozostawionego narybku];
+recr| roczny narybek | [liczba œledzi];
+cumf| ³¹czne roczne natê¿enie po³owów w regionie | [u³amek pozostawionego narybku];
+totaln|  ³¹czna liczba ryb z³owionych w ramach po³owu | [liczba œledzi];
+sst| temperatura wody przy powierzchni | [?C];
+sal| poziom zasolenia wody | [Knudsen ppt];
+xmonth|miesi¹c po³owu | [numer miesi¹ca];
+nao| oscylacja pó³nocnoatlantycka | [mb]
+
+
+Plik zosta³ wczytany za pomoc¹ poni¿szego kodu. Ponadto zbiór danych zosta³ podzielony od razu na zbiór treningowy i testowy w proporcjach 75:25. Przedstawione zosta³o podsumowanie zbioru danych:
+```{r dataread, warning=FALSE, cache=TRUE}
+data_csv<-tbl_df(read.csv("http://www.cs.put.poznan.pl/dbrzezinski/teaching/zed/sledzie.csv",na.strings=c("","?","NA")))
+intraining <- createDataPartition(y=data_csv$length, p=0.70, list=FALSE)
+data_csv_train <- data_csv[intraining,]
+data_csv_test <- data_csv[-intraining,]
+kable(summary(data_csv))
+```
+
+Jak widaæ w tabeli powy¿ej, w tym zbiorze danych dla niektórych atrybutów wystêpuj¹ wartoœci puste i jast ich dosyæ du¿o. Wartoœci te zosta³y zamienione wartoœci¹ œredni¹ z ka¿dego miesi¹ca. 
+
+<!-- # ```{r} -->
+<!-- #  func <- function(x){ -->
+<!-- #    print(x) -->
+<!-- #    value<-1 -->
+<!-- #    result<-c() -->
+<!-- #    result[1]<-1 -->
+<!-- #    for (i in 1:(length(x)-1)){ -->
+<!-- #      if(x[i+1] >= x[i]){ -->
+<!-- #        result[i+1] <- value -->
+<!-- #      } -->
+<!-- #      else { -->
+<!-- #        value<-value+1 -->
+<!-- #        result[i+1]<-value -->
+<!-- #      } -->
+<!-- #    } -->
+<!-- #    return(result) -->
+<!-- #  } -->
+<!-- #  mth<-data_csv_train$xmonth -->
+<!-- #  yrs<-func(mth) -->
+<!-- #  data_csv_train <- data_csv_train %>% mutate(Y=yrs) -->
+<!-- # ``` -->
+
+##Wartoœci puste
+
+Do usuniêcia wartoœci pustych wykorzystano obserwacjê, ¿e wartoœci dla ka¿dego miesi¹ca (xmonth) i ka¿dego roku po³owów (recr) s¹ sta³e. Dziêki temu mo¿liwe by³o pogrupowanie danych oraz zastosowanie funkcji zamieniaj¹cej wartoœæ pust¹ wartoœci¹ œredni¹ dla tej grupy.
+
+```{r replace_NE, results='hide'}
+ replace_NA <- function(x) replace(x, !(is.finite(x)), mean(x, na.rm = TRUE))
+ data_csv2 <-data_csv_train %>% group_by(recr,xmonth) %>% mutate( cfin1 = replace_NA(cfin1),
+     cfin2 = replace_NA(cfin2),
+     chel1 = replace_NA(chel1),
+     chel2 = replace_NA(chel2),
+     lcop1 = replace_NA(lcop1),
+     lcop2 = replace_NA(lcop2),
+     sst = replace_NA(sst)
+     )%>% ungroup() %>% filter(complete.cases(.))
+```
+
+
+#Rozk³ad zmiennych i korelacja
+##Histogram
+
+```{r wykresy, echo=FALSE}
+d <- melt(data_csv2,id.vars=1,measure.vars=2:16)
+inputPanel(
+  
+  sliderInput("bins", "Liczba przedzialow:", min = 5, max = 50, value = 30)
+)
+
+output$h<-renderPlot(
+  
+  ggplot(d,aes(x = value)) + 
+  facet_wrap(~variable,scales = "free_x",ncol = 2) + 
+  geom_histogram(bins = input$bins, color="blue")+ xlab("Wartoœæ")+ ylab("Liczba")
+)
+
+plotOutput("h",width="600px",height="1000px")
+
+```
+
+
+##Interaktywny wykres 
+
+Wykres poni¿ej obrazuje rozk³ad d³ugoœci œledzi w czasie dla wybranych miesiêcy
+
+```{r heering_size, echo=FALSE}
+inputPanel(
+  
+  sliderInput("mth_adjust", label = "Wybierz miesiac:",
+              min = 1, max = 12, value = c(1,12) , step = 1)
+)
+
+renderPlot({
+  pl_data <- data_csv2  %>% filter(xmonth>=input$mth_adjust[1] , xmonth<=input$mth_adjust[2] )%>% arrange(X)
+  plt<- ggplot(pl_data,aes(y=length,x=X,color=length))+ geom_point(alpha=1/10)+geom_smooth(method='auto',color="red")+ xlab("Czas")+ ylab("D³ugoœæ")+theme_minimal()
+  return(plt)
+})
+```
+
+##Korelacja
+
+Korelacja by³a pomocna do ustalenia wyboru atrybutów do budowy model. Zauwa¿ono, ¿e stopieñ korelacji danych nie jest zbyt du¿y. Wybrano wiêc te atrybuty z najwiêkszym stopniem korelacji, przy czym starano siê odrzuciæ te atrybuty, które s¹ ju¿ skorelowane z atrybutami o najwy¿szych wartoœciach korelacji.
+
+```{r correlation, echo=FALSE}
+x<- cor(data_csv2[,-1])
+corrplot(x)
+```
+
+#Budowanie modelu i analiza 
+
+
+```{r regression, echo=FALSE, warning=FALSE, message=FALSE}
+
+ctrl <- trainControl(
+  method = "repeatedcv",
+  number = 2,
+  repeats = 5)
+lm_fit <- train(length ~ cfin1+cfin2+lcop1+fbar+totaln+sst+nao,
+                data = data_csv2, 
+                method = "rf",
+                trControl = ctrl,
+                importance=TRUE,
+                ntree = 10 )
+test_data<-na.omit(data_csv_test)
+predicted <- predict(lm_fit, test_data)
+x<-postResample(as.matrix(test_data[,2]),predicted)
+Vrimp<-varImp(lm_fit$finalModel)
+```
+Na samym pocz¹tku zbiór zosta³ podzielony ze wzglêdu na atrybut length w proporcji 70:30.
+Do budowy regresora u¿yto metody "random forest". Poni¿ej przedstawione s¹ wyniki tego modelu:
+ 
+ Zbiór |         RSME        |        R Squared            |
+--------------|----------------------------|----------------------------|
+Zbiór treningowy| "`r lm_fit$results$RMSE[lm_fit$bestTune$mtry]`" | "`r lm_fit$results$Rsquared[lm_fit$bestTune$mtry]`"|
+Zbiór testowy| "`r x[1]`" | "`r x[2]`"|
+
+Wyniki testu wa¿noœci atrybutów niestety nie s¹ jednoznaczne, jednak minimalnie najwa¿niejszym atrybutem wp³ywaj¹cym na d³ugoœæ œledzia jest sst:
+
+```{r importanceOfAttributes, echo=FALSE}
+kable(Vrimp)
+```
